@@ -3,7 +3,7 @@
 외대부고 (HAFS) 3D프린터 팜 출력 관리 시스템.
 Bambu Lab A1 + AMS Lite 프린터의 출력 신청, 큐 관리, 상태 모니터링을 자동화합니다.
 
-**By Jiu Yun & Yooan Chung**
+**By Jiu Yun & Yooan Chung & Siwon Choi**
 
 ---
 
