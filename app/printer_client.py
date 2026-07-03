@@ -154,6 +154,25 @@ class PrinterClient:
             if printer is not None:
                 self._disconnect(printer)
 
+    def set_light(self, on: bool):
+        """조명 켜기/끄기. 반환 (성공, 메시지)."""
+        if self.is_mock:
+            return True, "[Mock] 조명 " + ("켜짐" if on else "꺼짐")
+        printer = None
+        try:
+            printer = self._connect()
+            if on:
+                printer.turn_light_on()
+            else:
+                printer.turn_light_off()
+            return True, "조명 " + ("켜짐" if on else "꺼짐")
+        except Exception as e:
+            logger.warning("[%s] 조명 제어 실패: %s", self.name, e)
+            return False, f"조명 오류: {e}"
+        finally:
+            if printer is not None:
+                self._disconnect(printer)
+
     def _mock_status(self):
         return PrinterStatusInfo(online=False, state="OFFLINE", slots=[
             SlotInfo(0, "PLA", "#FFFFFF", "흰색", 80, False),

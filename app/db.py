@@ -3,6 +3,7 @@
 SQLAlchemy 2.0 async + SQLite.
 라우트에서 `Depends(get_db)`로 세션 받아 사용.
 """
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -19,6 +20,17 @@ engine = create_async_engine(
     echo=False,  # True로 바꾸면 SQL 쿼리 다 로그에 찍힘 (디버그용)
     future=True,
 )
+
+
+@event.listens_for(engine.sync_engine, "connect")
+def _set_sqlite_pragmas(dbapi_conn, _):
+    """Enable WAL mode so reads don't block behind status-sync writes."""
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute("PRAGMA synchronous=NORMAL")   # fsync only at checkpoint
+    cur.execute("PRAGMA busy_timeout=5000")    # wait up to 5s instead of failing
+    cur.execute("PRAGMA cache_size=10000")     # ~10 MB page cache
+    cur.close()
 
 # 세션 팩토리
 async_session_maker = async_sessionmaker(

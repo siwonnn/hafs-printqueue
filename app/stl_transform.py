@@ -73,7 +73,6 @@ def apply_transform(
     Returns:
         변환된 STL 파일의 경로 (같은 폴더에 새 UUID 이름으로 저장)
     """
-    # 변환이 없으면 원본 반환
     no_scale = abs(scale - 1.0) < 1e-6
     no_rot = (abs(rotation_x) < 1e-6 and abs(rotation_y) < 1e-6 and abs(rotation_z) < 1e-6)
     if no_scale and no_rot:
@@ -82,14 +81,12 @@ def apply_transform(
     input_path = Path(input_path)
     data = input_path.read_bytes()
 
-    # ASCII STL → 바이너리로 먼저 변환하면 좋지만,
-    # 일단 바이너리 STL만 처리 (Fusion/Bambu Studio 기본 출력은 바이너리)
-    # ASCII면 그냥 원본 반환
+    # 바이너리 STL만 처리 (Fusion/Bambu Studio 기본 출력은 바이너리)
+    # ASCII면 원본 반환
     try:
         tri_count = struct.unpack_from('<I', data, 80)[0]
         expected = 84 + tri_count * 50
         if len(data) != expected:
-            # ASCII STL — 변환 미지원, 원본 반환
             return str(input_path)
     except Exception:
         return str(input_path)

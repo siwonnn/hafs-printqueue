@@ -74,14 +74,14 @@
             {% for job in report.jobs %}
             <tr>
                 <td>{{ loop.index }}</td>
-                <td>{{ job.created_at.strftime('%m-%d %H:%M') if job.created_at else "—" }}</td>
+                <td>{{ (job.created_at | kst).strftime('%m-%d %H:%M') if job.created_at else "—" }}</td>
                 <td>{{ report.users[job.user_id].name if job.user_id in report.users else "—" }}</td>
                 <td>{{ report.printers[job.printer_id].name if job.printer_id in report.printers else "—" }}</td>
                 <td>{{ job.filename }}</td>
                 <td>{{ status_kr(job.status.value) }}</td>
-                <td>{{ job.approved_at.strftime('%m-%d %H:%M') if job.approved_at else "—" }}</td>
-                <td>{{ job.started_at.strftime('%m-%d %H:%M') if job.started_at else "—" }}</td>
-                <td>{{ job.completed_at.strftime('%m-%d %H:%M') if job.completed_at else "—" }}</td>
+                <td>{{ (job.approved_at | kst).strftime('%m-%d %H:%M') if job.approved_at else "—" }}</td>
+                <td>{{ (job.started_at | kst).strftime('%m-%d %H:%M') if job.started_at else "—" }}</td>
+                <td>{{ (job.completed_at | kst).strftime('%m-%d %H:%M') if job.completed_at else "—" }}</td>
             </tr>
             {% endfor %}
         </tbody>

@@ -40,7 +40,8 @@
                     <td>{{ printers[job.printer_id].name if job.printer_id in printers else "—" }}</td>
                     <td>
                         <span class="status-badge job-status-{{ job.status.value }}">
-                            {% if job.status.value == "pending_approval" %}승인 대기
+                            {% if job.status.value == "processing" %}⏳ 슬라이싱 중...
+                            {% elif job.status.value == "pending_approval" %}승인 대기
                             {% elif job.status.value == "queued" %}대기 {{ job.queue_position }}번
                             {% elif job.status.value == "printing" %}출력 중
                             {% elif job.status.value == "completed" %}완료
@@ -50,7 +51,7 @@
                             {% endif %}
                         </span>
                     </td>
-                    <td class="job-time">{{ job.created_at.strftime("%m/%d %H:%M") }}</td>
+                    <td class="job-time">{{ (job.created_at | kst).strftime("%m/%d %H:%M") }}</td>
                     <td>
                         {% if job.status.value in ("pending_approval", "queued") %}
                             <form method="post" action="/jobs/{{ job.id }}/cancel"
@@ -64,5 +65,15 @@
             {% endfor %}
         </tbody>
     </table>
+{% endif %}
+
+<style>
+.job-status-processing { background: #eff6ff; color: #1e40af; }
+</style>
+
+{% set has_processing = namespace(val=false) %}
+{% for job in jobs %}{% if job.status.value == "processing" %}{% set has_processing.val = true %}{% endif %}{% endfor %}
+{% if has_processing.val %}
+<script>setTimeout(() => location.reload(), 8000);</script>
 {% endif %}
 {% endblock %}

@@ -27,7 +27,7 @@
         <div class="viewer-wrap">
             <div id="viewer"></div>
             <div id="viewer-loading">모델 로딩 중...</div>
-            <div class="viewer-hint">드래그: 회전 · 스크롤: 확대 </div>
+            <div class="viewer-hint">드래그: 회전 · 스크롤: 확대</div>
         </div>
 
         <!-- Model info bar -->
@@ -81,8 +81,6 @@
 
         </div>
 
-        <!-- Bed warning (injected by JS) -->
-
         <!-- Thumbnail strip -->
         {% if files|length > 1 %}
         <div class="thumb-strip">
@@ -116,7 +114,7 @@
             <div class="files-summary">
                 <div class="files-summary-title">선택한 파일 ({{ files|length }}개)</div>
                 {% for f in files %}
-                <div class="files-summary-item" id="summary-{{ loop.index0 }}">
+                <div class="files-summary-item">
                     <span>🧊</span>
                     <span>{{ f.original_name }}</span>
                 </div>
@@ -126,15 +124,15 @@
             <div class="form-group">
                 <label for="printer_id">프린터 선택</label>
                 <select id="printer_id" name="printer_id" required>
+                    <option value="auto">✨ 스마트 배정</option>
                     {% for printer in printers %}
-                    <option value="{{ printer.id }}">
-                        {{ printer.name }}
-                        {% if printer.status.value == "idle" %}(대기 중)
-                        {% elif printer.status.value == "printing" %}(출력 중)
-                        {% else %}(오프라인){% endif %}
+                    {% set q = queue_counts[printer.id] %}
+                    <option value="{{ printer.id }}" data-queue="{{ q }}">
+                        {{ printer.name }} — {% if q == 0 %}대기 없음{% else %}대기 {{ q }}개{% endif %}
                     </option>
                     {% endfor %}
                 </select>
+                <div id="stl-printer-nudge" class="printer-nudge" style="display:none;"></div>
                 <small>모든 파일이 같은 프린터 큐에 들어갑니다</small>
             </div>
 
@@ -215,7 +213,7 @@
     padding: 14px 16px; border-top: 1px solid var(--border);
     display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
 }
-.transform-group { }
+
 .transform-label {
     font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
     color: var(--text-muted); margin-bottom: 8px; font-weight: 500;
@@ -306,6 +304,24 @@ input[type="range"] {
     border: 1px solid var(--accent); border-radius: 3px;
     color: var(--text); font-size: 13px; padding: 0 4px;
     text-align: center; outline: none;
+}
+.bed-warning {
+    display: none;
+    background: #fef3c7; border: 1px solid #f59e0b;
+    color: #92400e; padding: 10px 14px; font-size: 13px;
+    border-radius: 6px; margin: 10px 16px;
+    align-items: center; gap: 8px;
+}
+.printer-nudge {
+    margin-top: 8px; padding: 10px 13px;
+    background: #fffbeb; border: 1px solid #fcd34d;
+    border-radius: var(--radius); font-size: 13px;
+    color: #92400e; line-height: 1.5;
+}
+.nudge-link {
+    background: none; border: none; cursor: pointer;
+    color: var(--accent); font-size: 13px; padding: 0;
+    text-decoration: underline; font-family: inherit;
 }
 @media (max-width: 768px) { .preview-layout { grid-template-columns: 1fr; } }
 </style>
@@ -498,7 +514,7 @@ function updateSizeDisplay(index) {
     if (!warn) {
         warn = document.createElement('div');
         warn.id = 'bed-warning';
-        warn.style.cssText = 'background:#fef3c7;border:1px solid #f59e0b;color:#92400e;padding:10px 14px;font-size:13px;border-radius:6px;margin:10px 16px;display:flex;align-items:center;gap:8px;';
+        warn.className = 'bed-warning';
         const infoBar = document.getElementById('model-info');
         infoBar.parentNode.insertBefore(warn, infoBar.nextSibling);
     }
@@ -506,7 +522,7 @@ function updateSizeDisplay(index) {
         warn.style.display = 'flex';
         warn.innerHTML = `⚠️ <span>출력 범위(256×256×256mm) 초과! Fusion 360 내보내기 → STL → Options → Units → <strong>Millimeters</strong> 설정 후 재업로드하거나, 크기 슬라이더로 줄이세요.</span>`;
     } else {
-        warn.style.display = 'none';
+        warn.style.display = '';
     }
 }
 
@@ -598,6 +614,11 @@ async function loadModel(index) {
             if (!res.ok) throw new Error('fetch ' + res.status);
             const buf = await res.arrayBuffer();
             geo = parseSTL(buf);
+            // STL / PrusaSlicer use Z-up; Three.js uses Y-up.
+            // Rotate -90° around X so the viewer shows exactly what will print:
+            // Z (height in slicer) → Y (up in Three.js).
+            // After this, user rotations in the viewer match the slicer's Z-up space.
+            geo.applyMatrix4(new THREE.Matrix4().makeRotationX(-Math.PI / 2));
             geo.computeBoundingBox();
             const minY = geo.boundingBox.min.y;
             const center = new THREE.Vector3();
@@ -667,5 +688,49 @@ document.getElementById('confirm-form').addEventListener('submit', () => {
 
 initViewer();
 loadModel(0);
+
+// Printer queue nudge
+(function () {
+    const sel = document.getElementById('printer_id');
+    const nudge = document.getElementById('stl-printer-nudge');
+    if (!sel) return;
+
+    function hideNudge() { nudge.style.display = 'none'; }
+
+    function showNudge(selQ, bestName) {
+        nudge.innerHTML = '';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'nudge-link';
+        btn.textContent = '스마트 배정으로 바꾸기';
+        btn.addEventListener('click', () => { sel.value = 'auto'; hideNudge(); });
+        const strong = document.createElement('strong');
+        strong.textContent = bestName;
+        nudge.append(
+            `⚠ 이 프린터의 대기열이 길어요 (${selQ}개). `,
+            strong,
+            '의 대기열이 더 짧아요 — ',
+            btn
+        );
+        nudge.style.display = 'block';
+    }
+
+    function checkLoad() {
+        if (sel.value === 'auto') { hideNudge(); return; }
+        const specific = Array.from(sel.options).filter(o => o.value !== 'auto');
+        if (specific.length < 2) { hideNudge(); return; }
+        const counts = specific.map(o => parseInt(o.dataset.queue || '0'));
+        const minQ = Math.min(...counts);
+        const selQ = parseInt(sel.selectedOptions[0].dataset.queue || '0');
+        if (selQ > minQ + 1) {
+            const bestName = specific[counts.indexOf(minQ)].text.split('—')[0].trim();
+            showNudge(selQ, bestName);
+        } else {
+            hideNudge();
+        }
+    }
+
+    sel.addEventListener('change', checkLoad);
+})();
 </script>
 {% endblock %}

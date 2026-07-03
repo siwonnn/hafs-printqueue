@@ -1,8 +1,15 @@
 """보고서 생성 (PDF + Excel)."""
 import calendar
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+_KST = timezone(timedelta(hours=9))
+
+def _to_kst(dt: datetime) -> datetime:
+    if dt is None:
+        return dt
+    return dt.replace(tzinfo=timezone.utc).astimezone(_KST)
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -52,12 +59,12 @@ def _register_korean_font():
 async def gather_report_data(db: AsyncSession, year: int, month: int):
     """해당 월의 보고서 데이터 수집."""
 
-    # 기간
-    start = datetime(year, month, 1)
+    # 기간 — DB timestamps are UTC; KST month boundaries are UTC-9h
+    start = datetime(year, month, 1) - timedelta(hours=9)
     if month == 12:
-        end = datetime(year + 1, 1, 1)
+        end = datetime(year + 1, 1, 1) - timedelta(hours=9)
     else:
-        end = datetime(year, month + 1, 1)
+        end = datetime(year, month + 1, 1) - timedelta(hours=9)
 
     # 해당 기간의 모든 작업
     result = await db.execute(
@@ -301,7 +308,7 @@ def generate_pdf(data: dict) -> bytes:
 
     # 푸터
     story.append(Spacer(1, 1 * cm))
-    footer_text = f"생성 시각: {datetime.now().strftime('%Y-%m-%d %H:%M')} · HAFS PrintQueue · hafs.wiki"
+    footer_text = f"생성 시각: {_to_kst(datetime.utcnow()).strftime('%Y-%m-%d %H:%M')} (KST) · HAFS PrintQueue · hafs.wiki"
     story.append(Paragraph(footer_text, muted_style))
 
     doc.build(story)
@@ -341,16 +348,17 @@ def generate_excel(data: dict) -> bytes:
     for job in data["jobs"]:
         user = data["users"].get(job.user_id)
         printer = data["printers"].get(job.printer_id)
+        def _fmt(dt): return _to_kst(dt).strftime("%Y-%m-%d %H:%M") if dt else ""
         ws.append([
-            job.created_at.strftime("%Y-%m-%d %H:%M") if job.created_at else "",
+            _fmt(job.created_at),
             user.name if user else "—",
             user.email if user else "—",
             printer.name if printer else "—",
             job.filename,
             _status_korean(job.status.value),
-            job.approved_at.strftime("%Y-%m-%d %H:%M") if job.approved_at else "",
-            job.started_at.strftime("%Y-%m-%d %H:%M") if job.started_at else "",
-            job.completed_at.strftime("%Y-%m-%d %H:%M") if job.completed_at else "",
+            _fmt(job.approved_at),
+            _fmt(job.started_at),
+            _fmt(job.completed_at),
             job.user_notes or "",
             job.admin_notes or "",
         ])

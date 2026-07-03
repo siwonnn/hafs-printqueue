@@ -40,6 +40,11 @@
                 <div class="drop-hint">여러 파일 동시 선택 가능</div>
             </label>
             <div id="stl-file-list" class="file-list" style="display:none;"></div>
+            <div class="stl-notice">
+                ⚠ 이 기능은 <strong>서포트(지지대)를 자동으로 추가하지 않습니다.</strong>
+                서포트가 필요한 모델은 Bambu Studio / OrcaSlicer에서 직접 슬라이싱 후
+                오른쪽의 <strong>.3mf 경로</strong>로 업로드하세요.
+            </div>
             <button type="submit" class="btn btn-primary btn-full" id="stl-submit" disabled>
                 업로드 + 3D 미리보기
             </button>
@@ -58,18 +63,23 @@
 
         <form id="sliced-form" method="post" action="/upload" enctype="multipart/form-data">
             <label class="drop-zone" id="sliced-drop">
-                <input type="file" name="file" id="sliced-input" accept=".3mf,.gcode" required>
+                <input type="file" name="files" id="sliced-input" accept=".3mf,.gcode" multiple required>
                 <div class="drop-icon" id="sliced-icon">📁</div>
                 <div class="drop-text" id="sliced-text">.3mf / .gcode 파일을 여기에 끌어다 놓거나 클릭</div>
-                <div class="drop-hint">Bambu Studio 또는 OrcaSlicer에서 슬라이싱 후 내보낸 파일</div>
+                <div class="drop-hint">여러 파일 동시 선택 가능 · Bambu Studio 또는 OrcaSlicer에서 내보낸 파일</div>
             </label>
             <div class="form-group">
                 <label>프린터 선택</label>
-                <select name="printer_id" required>
+                <select name="printer_id" id="sliced-printer-select" required>
+                    <option value="auto">✨ 스마트 배정 (대기열이 가장 짧은 프린터로)</option>
                     {% for printer in printers %}
-                    <option value="{{ printer.id }}">{{ printer.name }}</option>
+                    {% set q = queue_counts[printer.id] %}
+                    <option value="{{ printer.id }}" data-queue="{{ q }}">
+                        {{ printer.name }} — {% if q == 0 %}대기 없음{% else %}대기 {{ q }}개{% endif %}
+                    </option>
                     {% endfor %}
                 </select>
+                <div id="sliced-printer-nudge" class="printer-nudge" style="display:none;"></div>
             </div>
             <div class="form-group">
                 <label>메모 (선택)</label>
@@ -150,6 +160,31 @@
 @media (max-width: 680px) {
     .upload-paths { grid-template-columns: 1fr; }
 }
+.stl-notice {
+    padding: 10px 13px;
+    margin-bottom: 12px;
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    border-radius: var(--radius);
+    font-size: 12.5px;
+    color: #78350f;
+    line-height: 1.6;
+}
+.printer-nudge {
+    margin-top: 8px;
+    padding: 10px 13px;
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    border-radius: var(--radius);
+    font-size: 13px;
+    color: #92400e;
+    line-height: 1.5;
+}
+.nudge-link {
+    background: none; border: none; cursor: pointer;
+    color: var(--accent); font-size: 13px; padding: 0;
+    text-decoration: underline; font-family: inherit;
+}
 </style>
 
 <script>
@@ -217,25 +252,71 @@ stlDropZone.addEventListener('drop', e => {
     renderFileList();
 });
 
-// Sliced file
+// Printer nudge
+(function () {
+    const sel = document.getElementById('sliced-printer-select');
+    const nudge = document.getElementById('sliced-printer-nudge');
+    if (!sel) return;
+
+    function hideNudge() { nudge.style.display = 'none'; }
+
+    function showNudge(selQ, bestName) {
+        nudge.innerHTML = '';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'nudge-link';
+        btn.textContent = '스마트 배정으로 바꾸기';
+        btn.addEventListener('click', () => { sel.value = 'auto'; hideNudge(); });
+        const strong = document.createElement('strong');
+        strong.textContent = bestName;
+        nudge.append(
+            `⚠ 이 프린터의 대기열이 길어요 (${selQ}개). `,
+            strong,
+            '의 대기열이 더 짧아요 — ',
+            btn
+        );
+        nudge.style.display = 'block';
+    }
+
+    function checkLoad() {
+        if (sel.value === 'auto') { hideNudge(); return; }
+        const specific = Array.from(sel.options).filter(o => o.value !== 'auto');
+        if (specific.length < 2) { hideNudge(); return; }
+        const counts = specific.map(o => parseInt(o.dataset.queue || '0'));
+        const minQ = Math.min(...counts);
+        const selQ = parseInt(sel.selectedOptions[0].dataset.queue || '0');
+        if (selQ > minQ + 1) {
+            const bestName = specific[counts.indexOf(minQ)].text.split('—')[0].trim();
+            showNudge(selQ, bestName);
+        } else {
+            hideNudge();
+        }
+    }
+
+    sel.addEventListener('change', checkLoad);
+})();
+
+// Sliced file (multi)
 const slicedInput = document.getElementById('sliced-input');
 const slicedDrop  = document.getElementById('sliced-drop');
 const slicedIcon  = document.getElementById('sliced-icon');
 const slicedText  = document.getElementById('sliced-text');
 const slicedSubmitBtn = document.getElementById('sliced-submit');
 
-function setSlicedFile(file) {
+function setSlicedFiles(fileList) {
+    const valid = Array.from(fileList).filter(f => /\.(3mf|gcode)$/i.test(f.name));
+    if (!valid.length) return;
     const dt = new DataTransfer();
-    dt.items.add(file);
+    valid.forEach(f => dt.items.add(f));
     slicedInput.files = dt.files;
     slicedIcon.textContent = '✅';
-    slicedText.textContent = file.name;
+    slicedText.textContent = valid.length === 1 ? valid[0].name : `${valid.length}개 파일 선택됨`;
     slicedDrop.classList.add('has-file');
     slicedSubmitBtn.disabled = false;
 }
 
 slicedInput.addEventListener('change', () => {
-    if (slicedInput.files[0]) setSlicedFile(slicedInput.files[0]);
+    if (slicedInput.files.length) setSlicedFiles(slicedInput.files);
 });
 
 document.getElementById('sliced-form').addEventListener('submit', () => {
@@ -246,9 +327,7 @@ slicedDrop.addEventListener('dragover', e => { e.preventDefault(); slicedDrop.cl
 slicedDrop.addEventListener('dragleave', () => slicedDrop.classList.remove('dragover'));
 slicedDrop.addEventListener('drop', e => {
     e.preventDefault(); slicedDrop.classList.remove('dragover');
-    const file = Array.from(e.dataTransfer.files)
-        .find(f => /\.(3mf|gcode)$/i.test(f.name));
-    if (file) setSlicedFile(file);
+    if (e.dataTransfer.files.length) setSlicedFiles(e.dataTransfer.files);
 });
 </script>
 {% endblock %}

@@ -46,14 +46,14 @@
             {% if slots %}
                 <div class="ams-strip" style="margin-bottom: 12px;">
                     {% for slot in slots %}
-                        <div class="ams-slot" title="슬롯 {{ slot.slot_index + 1 }}: {{ slot.color_name or '비어있음' }} ({{ slot.material_type or '' }})">
+                        <div class="ams-slot" title="슬롯 {{ slot.slot_index + 1 }}: {{ slot.color_hex | hex_color_name or '비어있음' }} ({{ slot.material_type or '' }})">
                             <div class="ams-color" style="background: {{ slot.color_hex if slot.color_hex else '#f3f4f6' }}; {% if not slot.color_hex %}border: 1px dashed var(--text-muted);{% endif %}"></div>
                             <div class="ams-label">
                                 {% if slot.is_empty %}
                                     <span class="muted">빈 슬롯</span>
                                 {% else %}
                                     <strong>{{ slot.material_type }}</strong>
-                                    <small>{{ slot.color_name or '' }}</small>
+                                    <small>{{ slot.color_hex | hex_color_name }}</small>
                                 {% endif %}
                             </div>
                         </div>

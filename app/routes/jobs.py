@@ -8,33 +8,71 @@
 - GET  /jobs:                본인 작업 목록
 - POST /jobs/{job_id}/cancel: 본인 작업 취소 (승인 대기·큐 대기 상태만)
 """
-import os
 import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
 
 from auth import require_user
 from config import settings
 from db import get_db
-from models import FilamentSlot, Job, JobStatus, Printer, User
+from models import Job, JobStatus, Printer, User
 
+
+import filters as _filters
 
 router = APIRouter()
 templates = Jinja2Templates(directory="templates")
+_filters.register(templates)
 
 ALLOWED_EXTENSIONS = {".3mf", ".gcode"}
 ALLOWED_STL = {".stl"}
 MAX_FILE_SIZE = 200 * 1024 * 1024  # 200MB
 
 
+# ── Smart printer picker ──────────────────────────────────────────────────────
+
+async def pick_best_printer(db: AsyncSession) -> Printer:
+    """Return the printer with the fewest active jobs, preferring online ones."""
+    result = await db.execute(select(Printer).order_by(Printer.id))
+    printers = result.scalars().all()
+    if not printers:
+        raise HTTPException(500, "등록된 프린터가 없습니다")
+
+    load_counts = {}
+    for p in printers:
+        count_result = await db.execute(
+            select(func.count(Job.id))
+            .where(Job.printer_id == p.id)
+            .where(Job.status.in_([JobStatus.PROCESSING, JobStatus.PENDING_APPROVAL, JobStatus.QUEUED, JobStatus.PRINTING]))
+        )
+        load_counts[p.id] = count_result.scalar_one()
+
+    healthy = [p for p in printers if p.status.value not in ("offline", "error")]
+    candidates = healthy if healthy else printers
+    return min(candidates, key=lambda p: load_counts[p.id])
+
+
 # ── GET /upload ───────────────────────────────────────────────────────────────
+
+async def _queue_counts(db: AsyncSession, printers) -> dict:
+    """Return {printer_id: active_job_count} in one query."""
+    if not printers:
+        return {}
+    res = await db.execute(
+        select(Job.printer_id, func.count(Job.id))
+        .where(Job.status.in_([JobStatus.PROCESSING, JobStatus.PENDING_APPROVAL, JobStatus.QUEUED, JobStatus.PRINTING]))
+        .group_by(Job.printer_id)
+    )
+    raw = dict(res.all())
+    return {p.id: raw.get(p.id, 0) for p in printers}
+
 
 @router.get("/upload", response_class=HTMLResponse)
 async def upload_page(
@@ -46,6 +84,7 @@ async def upload_page(
     printers = result.scalars().all()
     return templates.TemplateResponse("upload.html", {
         "request": request, "user": user, "printers": printers,
+        "queue_counts": await _queue_counts(db, printers),
         "error": request.query_params.get("error"),
     })
 
@@ -55,44 +94,54 @@ async def upload_page(
 @router.post("/upload")
 async def upload_submit(
     request: Request,
-    printer_id: int = Form(...),
+    printer_id: str = Form(...),
     user_notes: str = Form(""),
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if not file.filename:
-        return RedirectResponse(url="/upload?error=no_filename", status_code=302)
+    files = [f for f in files if f.filename]
+    if not files:
+        return RedirectResponse(url="/upload?error=no_files", status_code=302)
 
-    ext = Path(file.filename).suffix.lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        return RedirectResponse(url="/upload?error=invalid_extension", status_code=302)
+    for f in files:
+        if Path(f.filename).suffix.lower() not in ALLOWED_EXTENSIONS:
+            return RedirectResponse(url="/upload?error=invalid_extension", status_code=302)
 
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    if result.scalar_one_or_none() is None:
-        return RedirectResponse(url="/upload?error=invalid_printer", status_code=302)
+    if printer_id == "auto":
+        printer = await pick_best_printer(db)
+    else:
+        try:
+            pid = int(printer_id)
+        except ValueError:
+            return RedirectResponse(url="/upload?error=invalid_printer", status_code=302)
+        result = await db.execute(select(Printer).where(Printer.id == pid))
+        printer = result.scalar_one_or_none()
+        if printer is None:
+            return RedirectResponse(url="/upload?error=invalid_printer", status_code=302)
 
-    safe_name = f"{uuid.uuid4().hex}{ext}"
+    notes = user_notes.strip() or None
     upload_dir = Path(settings.UPLOAD_DIR)
     upload_dir.mkdir(parents=True, exist_ok=True)
-    file_path = upload_dir / safe_name
 
-    total_size = 0
-    with open(file_path, "wb") as f:
-        while chunk := await file.read(1024 * 1024):
-            total_size += len(chunk)
-            if total_size > MAX_FILE_SIZE:
-                file_path.unlink(missing_ok=True)
-                return RedirectResponse(url="/upload?error=file_too_large", status_code=302)
-            f.write(chunk)
+    for file in files:
+        ext = Path(file.filename).suffix.lower()
+        file_path = upload_dir / f"{uuid.uuid4().hex}{ext}"
+        total_size = 0
+        with open(file_path, "wb") as fh:
+            while chunk := await file.read(1024 * 1024):
+                total_size += len(chunk)
+                if total_size > MAX_FILE_SIZE:
+                    file_path.unlink(missing_ok=True)
+                    return RedirectResponse(url="/upload?error=file_too_large", status_code=302)
+                fh.write(chunk)
+        db.add(Job(
+            user_id=user.id, printer_id=printer.id,
+            filename=file.filename, file_path=str(file_path),
+            file_size=total_size, status=JobStatus.PENDING_APPROVAL,
+            user_notes=notes,
+        ))
 
-    job = Job(
-        user_id=user.id, printer_id=printer_id,
-        filename=file.filename, file_path=str(file_path),
-        file_size=total_size, status=JobStatus.PENDING_APPROVAL,
-        user_notes=user_notes.strip() or None,
-    )
-    db.add(job)
     await db.commit()
     return RedirectResponse(url="/jobs", status_code=303)
 
@@ -146,6 +195,7 @@ async def stl_preview(
         "user": user,
         "files": saved,
         "printers": printers,
+        "queue_counts": await _queue_counts(db, printers),
     })
 
 
@@ -168,16 +218,42 @@ async def stl_serve(
     return FileResponse(str(file_path), media_type="application/octet-stream")
 
 
+# ── Background slicer ─────────────────────────────────────────────────────────
+
+async def _slice_job_bg(job_id: int, stl_path: str, original_name: str):
+    """Runs after response is sent: slices STL → gcode, updates job record."""
+    from slicer import slice_stl, SlicingError
+    from db import async_session_maker
+
+    async with async_session_maker() as db:
+        result = await db.execute(select(Job).where(Job.id == job_id))
+        job = result.scalar_one_or_none()
+        if job is None:
+            return
+        try:
+            final_path = await slice_stl(stl_path)
+            Path(stl_path).unlink(missing_ok=True)
+            job.file_path = final_path
+            job.filename = Path(original_name).stem + Path(final_path).suffix
+            job.file_size = Path(final_path).stat().st_size
+        except SlicingError as e:
+            job.admin_notes = f"[슬라이싱 실패] {e.message}"
+        except Exception as e:
+            job.admin_notes = f"[슬라이싱 오류] {type(e).__name__}: {e}"
+        finally:
+            job.status = JobStatus.PENDING_APPROVAL
+            await db.commit()
+
+
 # ── POST /upload/stl-confirm ──────────────────────────────────────────────────
 
 @router.post("/upload/stl-confirm")
 async def stl_confirm(
-    request: Request,
+    background_tasks: BackgroundTasks,
     file_ids: List[str] = Form(...),
     filenames: List[str] = Form(...),
-    printer_id: int = Form(...),
+    printer_id: str = Form(...),
     user_notes: str = Form(""),
-    # Transform params — one value per file (same order as file_ids)
     scales: List[float] = Form(...),
     rotations_x: List[float] = Form(...),
     rotations_y: List[float] = Form(...),
@@ -185,107 +261,70 @@ async def stl_confirm(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create one Job per STL file, baking in transforms then slicing to gcode."""
+    """Apply transforms, create job as PROCESSING, slice in background."""
     from stl_transform import apply_transform
-    from slicer import slice_stl, SlicingError
     import asyncio
 
-    result = await db.execute(select(Printer).where(Printer.id == printer_id))
-    if result.scalar_one_or_none() is None:
-        return RedirectResponse(url="/upload?error=invalid_printer", status_code=302)
+    if printer_id == "auto":
+        printer = await pick_best_printer(db)
+    else:
+        try:
+            pid = int(printer_id)
+        except ValueError:
+            return RedirectResponse(url="/upload?error=invalid_printer", status_code=302)
+        result = await db.execute(select(Printer).where(Printer.id == pid))
+        printer = result.scalar_one_or_none()
+        if printer is None:
+            return RedirectResponse(url="/upload?error=invalid_printer", status_code=302)
 
     notes = user_notes.strip() or None
     loop = asyncio.get_event_loop()
-    slicing_errors = []
+    pending = []  # (job_id, stl_path, original_name) to slice after commit
 
     for i, (temp_id, original_name) in enumerate(zip(file_ids, filenames)):
         if not re.match(r'^[a-f0-9]{32}\.stl$', temp_id):
             continue
-
         file_path = Path(settings.UPLOAD_DIR) / temp_id
         if not file_path.exists():
             continue
 
-        # 1. Apply transform
         scale = scales[i]      if i < len(scales)      else 1.0
         rot_x = rotations_x[i] if i < len(rotations_x) else 0.0
         rot_y = rotations_y[i] if i < len(rotations_y) else 0.0
         rot_z = rotations_z[i] if i < len(rotations_z) else 0.0
 
-        transformed_path = await loop.run_in_executor(
+        stl_path = await loop.run_in_executor(
             None, apply_transform, str(file_path), scale, rot_x, rot_y, rot_z
         )
-        if transformed_path != str(file_path):
+        if stl_path != str(file_path):
             file_path.unlink(missing_ok=True)
-
-        # 2. Slice STL to gcode
-        try:
-            gcode_path = await slice_stl(transformed_path)
-            Path(transformed_path).unlink(missing_ok=True)
-            final_path = gcode_path
-            final_name = Path(original_name).stem + ".gcode"
-        except SlicingError as e:
-            slicing_errors.append(f"{original_name}: {e.message}")
-            final_path = transformed_path
-            final_name = original_name
 
         job = Job(
             user_id=user.id,
-            printer_id=printer_id,
-            filename=final_name,
-            file_path=final_path,
-            file_size=Path(final_path).stat().st_size,
-            status=JobStatus.PENDING_APPROVAL,
+            printer_id=printer.id,
+            filename=original_name,
+            file_path=stl_path,
+            file_size=Path(stl_path).stat().st_size,
+            status=JobStatus.PROCESSING,
             user_notes=notes,
         )
         db.add(job)
+        await db.flush()  # populate job.id before commit
+        pending.append((job.id, stl_path, original_name))
 
     await db.commit()
 
-    if slicing_errors:
-        import urllib.parse
-        msg = urllib.parse.quote(" | ".join(slicing_errors)[:200])
-        return RedirectResponse(url=f"/jobs?slicing_error={msg}", status_code=303)
+    for job_id, stl_path, original_name in pending:
+        background_tasks.add_task(_slice_job_bg, job_id, stl_path, original_name)
 
     return RedirectResponse(url="/jobs", status_code=303)
 
 
 # ── GET /printers ─────────────────────────────────────────────────────────────
 
-@router.get("/printers", response_class=HTMLResponse)
-async def printers_status(
-    request: Request,
-    user: User = Depends(require_user),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(Printer).order_by(Printer.id))
-    printers = result.scalars().all()
-
-    printer_jobs = {}
-    for p in printers:
-        result = await db.execute(
-            select(Job)
-            .where(Job.printer_id == p.id)
-            .where(Job.status.in_([JobStatus.QUEUED, JobStatus.PRINTING]))
-            .order_by(Job.queue_position)
-        )
-        printer_jobs[p.id] = result.scalars().all()
-
-    result = await db.execute(
-        select(FilamentSlot).order_by(FilamentSlot.printer_id, FilamentSlot.slot_index)
-    )
-    slots_by_printer = {}
-    for slot in result.scalars().all():
-        slots_by_printer.setdefault(slot.printer_id, []).append(slot)
-
-    return templates.TemplateResponse("printers.html", {
-        "request": request,
-        "user": user,
-        "printers": printers,
-        "printer_jobs": printer_jobs,
-        "slots_by_printer": slots_by_printer,
-        "user_id": user.id,
-    })
+@router.get("/printers")
+async def printers_status():
+    return RedirectResponse(url="/", status_code=301)
 
 
 # ── GET /jobs ─────────────────────────────────────────────────────────────────

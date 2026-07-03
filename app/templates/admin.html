@@ -38,6 +38,68 @@
             <p>승인 대기 중인 작업이 없습니다.</p>
         </div>
     {% else %}
+        <div class="scrollable-table-wrap scrollable-table-wrap--lg">
+            <table class="jobs-table">
+                <thead>
+                    <tr>
+                        <th>학생</th>
+                        <th>파일</th>
+                        <th>프린터</th>
+                        <th>신청 시각</th>
+                        <th>액션</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for job in pending_jobs %}
+                        <tr>
+                            <td>
+                                {{ users[job.user_id].name if job.user_id in users else "—" }}
+                                <div class="job-notes">{{ users[job.user_id].email if job.user_id in users else "" }}</div>
+                            </td>
+                            <td class="job-filename">
+                                {{ job.filename }}
+                                <a href="/admin/jobs/{{ job.id }}/download"
+                                   title="파일 다운로드" class="dl-link">⬇</a>
+                                {% if job.user_notes %}
+                                    <div class="job-notes">메모: {{ job.user_notes }}</div>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if printers|length > 1 %}
+                                    <form method="post" action="/admin/jobs/{{ job.id }}/reassign" style="display:flex; gap:4px; align-items:center;">
+                                        <select name="printer_id" class="btn-sm" style="max-width:110px;">
+                                            {% for p in printers %}
+                                                <option value="{{ p.id }}" {% if p.id == job.printer_id %}selected{% endif %}>{{ p.name }}</option>
+                                            {% endfor %}
+                                        </select>
+                                        <button type="submit" class="btn btn-ghost btn-sm">이동</button>
+                                    </form>
+                                {% else %}
+                                    {% for p in printers %}{% if p.id == job.printer_id %}{{ p.name }}{% endif %}{% endfor %}
+                                {% endif %}
+                            </td>
+                            <td class="job-time">{{ (job.created_at | kst).strftime("%m/%d %H:%M") }}</td>
+                            <td>
+                                <form method="post" action="/admin/jobs/{{ job.id }}/approve" style="display: inline;">
+                                    <button type="submit" class="btn btn-primary btn-sm">승인</button>
+                                </form>
+                                <form method="post" action="/admin/jobs/{{ job.id }}/reject" style="display: inline;">
+                                    <button type="submit" class="btn btn-ghost btn-sm">거부</button>
+                                </form>
+                            </td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% endif %}
+</section>
+
+<!-- 취소된 작업 -->
+{% if canceled_jobs %}
+<section style="margin-top: 48px;">
+    <h2 class="section-title">취소된 작업 ({{ canceled_jobs|length }})</h2>
+    <div class="scrollable-table-wrap">
         <table class="jobs-table">
             <thead>
                 <tr>
@@ -45,12 +107,11 @@
                     <th>파일</th>
                     <th>프린터</th>
                     <th>신청 시각</th>
-                    <th>액션</th>
                 </tr>
             </thead>
             <tbody>
-                {% for job in pending_jobs %}
-                    <tr>
+                {% for job in canceled_jobs %}
+                    <tr class="canceled-row">
                         <td>
                             {{ users[job.user_id].name if job.user_id in users else "—" }}
                             <div class="job-notes">{{ users[job.user_id].email if job.user_id in users else "" }}</div>
@@ -61,57 +122,13 @@
                                 <div class="job-notes">메모: {{ job.user_notes }}</div>
                             {% endif %}
                         </td>
-                        <td>
-                            {% for p in printers %}{% if p.id == job.printer_id %}{{ p.name }}{% endif %}{% endfor %}
-                        </td>
-                        <td class="job-time">{{ job.created_at.strftime("%m/%d %H:%M") }}</td>
-                        <td>
-                            <form method="post" action="/admin/jobs/{{ job.id }}/approve" style="display: inline;">
-                                <button type="submit" class="btn btn-primary btn-sm">승인</button>
-                            </form>
-                            <form method="post" action="/admin/jobs/{{ job.id }}/reject" style="display: inline;">
-                                <button type="submit" class="btn btn-ghost btn-sm">거부</button>
-                            </form>
-                        </td>
+                        <td>{% for p in printers %}{% if p.id == job.printer_id %}{{ p.name }}{% endif %}{% endfor %}</td>
+                        <td class="job-time">{{ (job.created_at | kst).strftime("%m/%d %H:%M") }}</td>
                     </tr>
                 {% endfor %}
             </tbody>
         </table>
-    {% endif %}
-</section>
-
-<!-- 취소된 작업 -->
-{% if canceled_jobs %}
-<section style="margin-top: 48px;">
-    <h2 class="section-title">취소된 작업 ({{ canceled_jobs|length }})</h2>
-    <table class="jobs-table">
-        <thead>
-            <tr>
-                <th>학생</th>
-                <th>파일</th>
-                <th>프린터</th>
-                <th>신청 시각</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for job in canceled_jobs %}
-                <tr class="canceled-row">
-                    <td>
-                        {{ users[job.user_id].name if job.user_id in users else "—" }}
-                        <div class="job-notes">{{ users[job.user_id].email if job.user_id in users else "" }}</div>
-                    </td>
-                    <td class="job-filename">
-                        {{ job.filename }}
-                        {% if job.user_notes %}
-                            <div class="job-notes">메모: {{ job.user_notes }}</div>
-                        {% endif %}
-                    </td>
-                    <td>{% for p in printers %}{% if p.id == job.printer_id %}{{ p.name }}{% endif %}{% endfor %}</td>
-                    <td class="job-time">{{ job.created_at.strftime("%m/%d %H:%M") }}</td>
-                </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    </div>
 </section>
 {% endif %}
 
@@ -123,7 +140,7 @@
             <div class="printer-queue-card">
                 <div class="printer-header">
                     <h3>{{ printer.name }}</h3>
-                    <span class="status-badge status-{{ printer.status.value }}">
+                    <span id="pstatus-{{ printer.id }}" class="status-badge status-{{ printer.status.value }}">
                         {% if printer.status.value == "idle" %}대기 중
                         {% elif printer.status.value == "printing" %}출력 중{% if printer.progress is not none %} {{ printer.progress }}%{% endif %}
                         {% elif printer.status.value == "paused" %}중지됨 (필라멘트 확인)
@@ -133,14 +150,30 @@
                     </span>
                 </div>
 
-                <img src="/static/cam{{ printer.id }}.jpg?v={{ range(100000) | random }}"
+                <img id="pcam-{{ printer.id }}"
+                     src="/static/cam{{ printer.id }}.jpg?t=0"
                      onerror="this.style.display='none'"
                      style="width:100%; border-radius:8px; margin:8px 0; display:block;"
                      alt="{{ printer.name }} 현재 상태">
 
                 {% if printer.nozzle_temp is not none %}
-                <div style="font-size:0.85rem; color:var(--text-muted); margin:6px 0;">🌡 노즐 {{ printer.nozzle_temp|round|int }}° / 베드 {{ printer.bed_temp|round|int }}°</div>
+                <div id="ptemps-{{ printer.id }}" class="printer-temps">
+                    🌡 노즐 {{ printer.nozzle_temp|round|int }}° / 베드 {{ printer.bed_temp|round|int }}°
+                </div>
+                {% else %}
+                <div id="ptemps-{{ printer.id }}" class="printer-temps" style="display:none;"></div>
                 {% endif %}
+
+                <div class="light-controls">
+                    <form method="post" action="/admin/printers/{{ printer.id }}/light" style="display:inline;">
+                        <input type="hidden" name="on" value="1">
+                        <button type="submit" class="btn btn-ghost btn-sm">💡 조명 켜기</button>
+                    </form>
+                    <form method="post" action="/admin/printers/{{ printer.id }}/light" style="display:inline;">
+                        <input type="hidden" name="on" value="0">
+                        <button type="submit" class="btn btn-ghost btn-sm">🌑 조명 끄기</button>
+                    </form>
+                </div>
 
                 <details class="printer-edit" style="margin: 8px 0 12px;">
                     <summary style="cursor: pointer; font-size: 0.85rem; color: var(--text-muted);">정보 수정</summary>
@@ -172,50 +205,64 @@
                 {% if not jobs %}
                     <p class="empty-message">큐가 비어있습니다.</p>
                 {% else %}
-                    <ol class="queue-list">
-                        {% for job in jobs %}
-                            <li class="queue-item queue-status-{{ job.status.value }}">
-                                <div class="queue-item-main">
-                                    <div class="queue-item-title">
-                                        {% if job.status.value == "printing" %}
-                                            <span class="badge badge-printing">출력 중</span>
-                                        {% else %}
-                                            <span class="queue-number">#{{ job.queue_position }}</span>
+                    <div class="scrollable-queue-wrap">
+                        <ol class="queue-list">
+                            {% for job in jobs %}
+                                <li class="queue-item queue-status-{{ job.status.value }}">
+                                    <div class="queue-item-main">
+                                        <div class="queue-item-title">
+                                            {% if job.status.value == "printing" %}
+                                                <span class="badge badge-printing">출력 중</span>
+                                            {% else %}
+                                                <span class="queue-number">#{{ job.queue_position }}</span>
+                                            {% endif %}
+                                            {{ job.filename }}
+                                        </div>
+                                        <div class="queue-item-meta">
+                                            {{ users[job.user_id].name if job.user_id in users else "—" }}
+                                            {% if job.user_notes %} · 메모: {{ job.user_notes }}{% endif %}
+                                        </div>
+                                    </div>
+                                    <div class="queue-item-actions">
+                                        {% if job.status.value == "queued" and loop.first %}
+                                            <form method="post" action="/admin/jobs/{{ job.id }}/start">
+                                                <select name="ams_slot" class="btn-sm" style="margin-right:4px;">
+                                                    <option value="">자동 (필라멘트 슬롯)</option>
+                                                    <option value="0">슬롯 0</option>
+                                                    <option value="1">슬롯 1</option>
+                                                    <option value="2">슬롯 2</option>
+                                                    <option value="3">슬롯 3</option>
+                                                </select>
+                                                <button type="submit" class="btn btn-primary btn-sm">출력 시작</button>
+                                            </form>
                                         {% endif %}
-                                        {{ job.filename }}
+                                        {% if job.status.value == "queued" and printers|length > 1 %}
+                                            <form method="post" action="/admin/jobs/{{ job.id }}/reassign" style="display:inline;">
+                                                <select name="printer_id" class="btn-sm" style="margin-right:4px;">
+                                                    {% for p in printers %}
+                                                        {% if p.id != printer.id %}
+                                                            <option value="{{ p.id }}">→ {{ p.name }}</option>
+                                                        {% endif %}
+                                                    {% endfor %}
+                                                </select>
+                                                <button type="submit" class="btn btn-ghost btn-sm">이동</button>
+                                            </form>
+                                        {% elif job.status.value == "printing" %}
+                                            <form method="post" action="/admin/jobs/{{ job.id }}/complete" style="display: inline;">
+                                                <button type="submit" class="btn btn-primary btn-sm">완료 (베드 비움)</button>
+                                            </form>
+                                            <form method="post" action="/admin/jobs/{{ job.id }}/cancel" style="display: inline;" onsubmit="return confirm('프린터 출력을 즉시 중단할까요?');">
+                                                <button type="submit" class="btn btn-ghost btn-sm" style="color: var(--danger);">🛑 출력 중단</button>
+                                            </form>
+                                            <form method="post" action="/admin/jobs/{{ job.id }}/fail" style="display: inline;">
+                                                <button type="submit" class="btn btn-ghost btn-sm">실패</button>
+                                            </form>
+                                        {% endif %}
                                     </div>
-                                    <div class="queue-item-meta">
-                                        {{ users[job.user_id].name if job.user_id in users else "—" }}
-                                        {% if job.user_notes %} · 메모: {{ job.user_notes }}{% endif %}
-                                    </div>
-                                </div>
-                                <div class="queue-item-actions">
-                                    {% if job.status.value == "queued" and loop.first %}
-                                        <form method="post" action="/admin/jobs/{{ job.id }}/start">
-                                            <select name="ams_slot" class="btn-sm" style="margin-right:4px;">
-                                                <option value="">자동 (필라멘트 슬롯)</option>
-                                                <option value="0">슬롯 0</option>
-                                                <option value="1">슬롯 1</option>
-                                                <option value="2">슬롯 2</option>
-                                                <option value="3">슬롯 3</option>
-                                            </select>
-                                            <button type="submit" class="btn btn-primary btn-sm">출력 시작</button>
-                                        </form>
-                                    {% elif job.status.value == "printing" %}
-                                        <form method="post" action="/admin/jobs/{{ job.id }}/complete" style="display: inline;">
-                                            <button type="submit" class="btn btn-primary btn-sm">완료 (베드 비움)</button>
-                                        </form>
-                                        <form method="post" action="/admin/jobs/{{ job.id }}/cancel" style="display: inline;" onsubmit="return confirm('프린터 출력을 즉시 중단할까요?');">
-                                            <button type="submit" class="btn btn-ghost btn-sm" style="color: var(--danger);">🛑 출력 중단</button>
-                                        </form>
-                                        <form method="post" action="/admin/jobs/{{ job.id }}/fail" style="display: inline;">
-                                            <button type="submit" class="btn btn-ghost btn-sm">실패</button>
-                                        </form>
-                                    {% endif %}
-                                </div>
-                            </li>
-                        {% endfor %}
-                    </ol>
+                                </li>
+                            {% endfor %}
+                        </ol>
+                    </div>
                 {% endif %}
             </div>
         {% endfor %}
@@ -252,11 +299,98 @@
 </section>
 
 <style>
+.printer-temps { font-size: 0.85rem; color: var(--text-muted); margin: 6px 0; }
+.dl-link { margin-left: 6px; font-size: 0.8rem; color: var(--text-muted); text-decoration: none; }
+.dl-link:hover { color: var(--primary); }
+.light-controls { margin: 8px 0; display: flex; gap: 6px; }
 .canceled-row td {
     color: var(--danger, #dc2626);
     font-style: italic;
     text-decoration: line-through;
     opacity: 0.75;
 }
+.scrollable-table-wrap {
+    max-height: 240px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.scrollable-table-wrap--lg {
+    max-height: 680px;
+}
+.scrollable-table-wrap .jobs-table thead th {
+    position: sticky;
+    top: 0;
+    background: var(--bg-elevated);
+    z-index: 1;
+}
+.scrollable-queue-wrap {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+.scrollable-queue-wrap .queue-list {
+    margin: 0;
+}
+/* Stack title above actions so controls don't squish the filename */
+.scrollable-queue-wrap .queue-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+}
+.scrollable-queue-wrap .queue-item-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    flex-shrink: unset;
+}
 </style>
+
+<script>
+const STATUS_LABELS = {
+    idle:     '대기 중',
+    paused:   '중지됨 (필라멘트 확인)',
+    error:    '오류',
+    offline:  '연결 안 됨',
+};
+
+async function pollPrinterStatus() {
+    try {
+        const printers = await fetch('/admin/printers/status').then(r => r.json());
+        printers.forEach(p => {
+            const badge = document.getElementById('pstatus-' + p.id);
+            const temps = document.getElementById('ptemps-' + p.id);
+
+            if (badge) {
+                let label = STATUS_LABELS[p.status] ?? p.status;
+                if (p.status === 'printing') {
+                    label = '출력 중' + (p.progress != null ? ' ' + p.progress + '%' : '');
+                }
+                badge.className = 'status-badge status-' + p.status;
+                badge.textContent = label;
+            }
+
+            if (temps) {
+                if (p.nozzle_temp != null) {
+                    temps.textContent = '🌡 노즐 ' + Math.round(p.nozzle_temp) + '° / 베드 ' + Math.round(p.bed_temp) + '°';
+                    temps.style.display = '';
+                } else {
+                    temps.style.display = 'none';
+                }
+            }
+        });
+    } catch (_) {}
+}
+
+function refreshCameras() {
+    document.querySelectorAll('img[id^="pcam-"]').forEach(img => {
+        const base = img.src.split('?')[0];
+        img.src = base + '?t=' + Date.now();
+    });
+}
+
+setInterval(pollPrinterStatus, 5000);
+setInterval(refreshCameras, 2000);
+</script>
 {% endblock %}

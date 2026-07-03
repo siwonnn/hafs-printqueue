@@ -2,6 +2,7 @@
 import enum
 from datetime import datetime
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     Enum as SQLEnum,
@@ -29,6 +30,7 @@ class PrinterStatus(str, enum.Enum):
 
 
 class JobStatus(str, enum.Enum):
+    PROCESSING = "processing"       # STL being sliced in background
     PENDING_APPROVAL = "pending_approval"
     QUEUED = "queued"
     PRINTING = "printing"
@@ -94,6 +96,56 @@ class Job(Base):
 
     user = relationship("User", back_populates="jobs")
     printer = relationship("Printer", back_populates="jobs", foreign_keys=[printer_id])
+
+
+class PostCategory(str, enum.Enum):
+    ANNOUNCEMENT = "announcement"
+    QUESTION = "question"
+    FREE = "free"
+
+
+class Post(Base):
+    __tablename__ = "posts"
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String(300), nullable=False)
+    body = Column(Text, nullable=False)
+    category = Column(SQLEnum(PostCategory), nullable=False, default=PostCategory.FREE)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    pinned = Column(Boolean, default=False)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    author = relationship("User")
+    comments = relationship("Comment", back_populates="post", cascade="all, delete-orphan")
+    attachments = relationship("PostAttachment", back_populates="post", cascade="all, delete-orphan")
+
+
+class Comment(Base):
+    __tablename__ = "comments"
+
+    id = Column(Integer, primary_key=True)
+    post_id = Column(Integer, ForeignKey("posts.id"), nullable=False)
+    parent_id = Column(Integer, ForeignKey("comments.id"), nullable=True)
+    author_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+    post = relationship("Post", back_populates="comments")
+    author = relationship("User")
+
+
+class PostAttachment(Base):
+    __tablename__ = "post_attachments"
+
+    id = Column(Integer, primary_key=True)
+    post_id = Column(Integer, ForeignKey("posts.id"), nullable=False)
+    original_name = Column(String(500), nullable=False)
+    stored_name = Column(String(500), nullable=False)
+    mime_type = Column(String(100), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+    post = relationship("Post", back_populates="attachments")
 
 
 class FilamentSlot(Base):

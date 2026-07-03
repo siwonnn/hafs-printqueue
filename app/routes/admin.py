@@ -6,7 +6,7 @@ NOTE: 프린터 상태(printer.status)는 admin 액션에서 절대 안 건드�
 """
 import asyncio
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -18,6 +18,11 @@ from auth import require_admin
 from db import get_db
 from printer_client import PrinterClient
 from models import Job, JobStatus, Printer, User, PrinterStatus
+
+
+def _utcnow():
+    # TZ=Asia/Seoul makes datetime.now() return KST; always write UTC to the DB.
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _bambulabs_start_print(ip, access_code, serial, file_path, remote_name, ams_slot):
@@ -39,8 +44,35 @@ def _bambulabs_start_print(ip, access_code, serial, file_path, remote_name, ams_
         if slot is None:
             return "no_filament"
 
-        with open(file_path, "rb") as f:
-            pr.upload_file(f, remote_name)
+        # Patch AMS slot references (S0A → S{slot}A) when slot != 0.
+        # For .gcode: simple string replace in a temp file.
+        # For .3mf: repack the archive via patch_ams_slot().
+        upload_path = file_path
+        tmp_path = None
+        if slot != 0:
+            import os as _os
+            if file_path.endswith('.gcode'):
+                import tempfile
+                with open(file_path, 'r', encoding='utf-8', errors='replace') as gf:
+                    gcode = gf.read()
+                gcode = gcode.replace('M620 S0A', f'M620 S{slot}A')
+                gcode = gcode.replace('M621 S0A', f'M621 S{slot}A')
+                tmp = tempfile.NamedTemporaryFile(
+                    mode='w', suffix='.gcode', delete=False, encoding='utf-8'
+                )
+                tmp.write(gcode)
+                tmp.close()
+                tmp_path = upload_path = tmp.name
+            elif file_path.endswith('.3mf'):
+                from make_3mf import patch_ams_slot
+                tmp_path = upload_path = patch_ams_slot(file_path, slot)
+
+        try:
+            with open(upload_path, "rb") as f:
+                pr.upload_file(f, remote_name)
+        finally:
+            if tmp_path:
+                _os.unlink(tmp_path)
         time.sleep(2)
 
         ok = pr.start_print(remote_name, 1, use_ams=True, ams_mapping=[slot])
@@ -60,8 +92,11 @@ def _bambulabs_start_print(ip, access_code, serial, file_path, remote_name, ams_
             pass
 
 
+import filters as _filters
+
 router = APIRouter(prefix="/admin")
 templates = Jinja2Templates(directory="templates")
+_filters.register(templates)
 
 
 @router.get("", response_class=HTMLResponse)
@@ -151,7 +186,7 @@ async def approve_job(
         return RedirectResponse(url="/admin", status_code=303)
 
     job.status = JobStatus.QUEUED
-    job.approved_at = datetime.now()
+    job.approved_at = _utcnow()
     job.queue_position = await _next_queue_position(db, job.printer_id)
     await db.commit()
 
@@ -171,6 +206,42 @@ async def reject_job(
     job.status = JobStatus.REJECTED
     await db.commit()
 
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@router.post("/jobs/{job_id}/reassign")
+async def reassign_job(
+    job_id: int,
+    printer_id: int = Form(...),
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    job = await _get_job_or_404(db, job_id)
+    if job.status not in (JobStatus.PENDING_APPROVAL, JobStatus.QUEUED):
+        return RedirectResponse(url="/admin", status_code=303)
+
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    new_printer = result.scalar_one_or_none()
+    if new_printer is None or job.printer_id == printer_id:
+        return RedirectResponse(url="/admin", status_code=303)
+
+    old_printer_id = job.printer_id
+
+    if job.status == JobStatus.QUEUED:
+        job.queue_position = None
+        await db.flush()
+        old_q = await db.execute(
+            select(Job)
+            .where(Job.printer_id == old_printer_id)
+            .where(Job.status == JobStatus.QUEUED)
+            .order_by(Job.queue_position)
+        )
+        for i, j in enumerate(old_q.scalars().all(), start=1):
+            j.queue_position = i
+        job.queue_position = await _next_queue_position(db, printer_id)
+
+    job.printer_id = printer_id
+    await db.commit()
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -210,7 +281,7 @@ async def start_job(
     # Mock(통신정보 없음) → 상태만 전환
     if client.is_mock:
         job.status = JobStatus.PRINTING
-        job.started_at = datetime.now()
+        job.started_at = _utcnow()
         printer.current_job_id = job.id
         await db.commit()
         return RedirectResponse(url="/admin?ok=mock_started", status_code=302)
@@ -231,10 +302,23 @@ async def start_job(
         return RedirectResponse(url=f"/admin?error={result_str}", status_code=302)
 
     job.status = JobStatus.PRINTING
-    job.started_at = datetime.now()
+    job.started_at = _utcnow()
+    job.queue_position = None
     printer.status = PrinterStatus.PRINTING
     printer.current_job_id = job.id
     await db.commit()
+
+    # Renumber remaining queued jobs for this printer
+    q_res = await db.execute(
+        select(Job)
+        .where(Job.printer_id == printer.id)
+        .where(Job.status == JobStatus.QUEUED)
+        .order_by(Job.queue_position)
+    )
+    for i, j in enumerate(q_res.scalars().all(), start=1):
+        j.queue_position = i
+    await db.commit()
+
     return RedirectResponse(url="/admin?ok=started", status_code=302)
 
 
@@ -250,7 +334,7 @@ async def complete_job(
         return RedirectResponse(url="/admin", status_code=303)
 
     job.status = JobStatus.COMPLETED
-    job.completed_at = datetime.now()
+    job.completed_at = _utcnow()
     # 이 job이 프린터의 현재 작업으로 박혀있으면 비움 (cleared on complete)
     _pres = await db.execute(select(Printer).where(Printer.id == job.printer_id))
     _printer = _pres.scalar_one_or_none()
@@ -285,7 +369,7 @@ async def fail_job(
         return RedirectResponse(url="/admin", status_code=303)
 
     job.status = JobStatus.FAILED
-    job.completed_at = datetime.now()
+    job.completed_at = _utcnow()
     await db.commit()
 
     return RedirectResponse(url="/admin", status_code=303)
@@ -324,7 +408,7 @@ async def cancel_job(
 
     # Mark job as failed
     job.status = JobStatus.FAILED
-    job.completed_at = datetime.now()
+    job.completed_at = _utcnow()
     await db.commit()
 
     return RedirectResponse(url="/admin?ok=cancelled", status_code=302)
@@ -493,3 +577,61 @@ async def snapshot_printers(
     from printer_sync import capture_all_snapshots
     await capture_all_snapshots(db)
     return RedirectResponse(url="/admin", status_code=302)
+
+
+@router.post("/printers/{printer_id}/light")
+async def set_printer_light(
+    printer_id: int,
+    on: int = Form(...),   # 1 = on, 0 = off
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Printer).where(Printer.id == printer_id))
+    printer = result.scalar_one_or_none()
+    if printer is None:
+        return RedirectResponse(url="/admin", status_code=302)
+    from printer_client import PrinterClient
+    client = PrinterClient(ip=printer.ip, access_code=printer.access_code,
+                           serial=printer.serial, name=printer.name)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, client.set_light, bool(on))
+    return RedirectResponse(url="/admin", status_code=302)
+
+
+@router.get("/jobs/{job_id}/download")
+async def download_job_file(
+    job_id: int,
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """gcode / STL 파일 다운로드."""
+    import os
+    from fastapi.responses import FileResponse
+    job = await _get_job_or_404(db, job_id)
+    if not job.file_path or not os.path.exists(job.file_path):
+        raise HTTPException(status_code=404, detail="파일을 찾을 수 없습니다.")
+    return FileResponse(
+        path=job.file_path,
+        filename=job.filename,
+        media_type="application/octet-stream",
+    )
+
+
+@router.get("/printers/status")
+async def printers_status_api(
+    user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """JSON: 모든 프린터의 현재 상태 (JS 폴링용)."""
+    from fastapi.responses import JSONResponse
+    result = await db.execute(select(Printer).order_by(Printer.id))
+    return JSONResponse([
+        {
+            "id": p.id,
+            "status": p.status.value,
+            "progress": p.progress,
+            "nozzle_temp": p.nozzle_temp,
+            "bed_temp": p.bed_temp,
+        }
+        for p in result.scalars().all()
+    ])
