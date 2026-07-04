@@ -143,7 +143,7 @@ async def upload_submit(
         ))
 
     await db.commit()
-    return RedirectResponse(url="/jobs", status_code=303)
+    return RedirectResponse(url="/jobs?submitted=1", status_code=303)
 
 
 # ── POST /upload/stl-preview ──────────────────────────────────────────────────
@@ -317,7 +317,7 @@ async def stl_confirm(
     for job_id, stl_path, original_name in pending:
         background_tasks.add_task(_slice_job_bg, job_id, stl_path, original_name)
 
-    return RedirectResponse(url="/jobs", status_code=303)
+    return RedirectResponse(url="/jobs?submitted=1", status_code=303)
 
 
 # ── GET /printers ─────────────────────────────────────────────────────────────
@@ -348,6 +348,7 @@ async def my_jobs(
 
     return templates.TemplateResponse("my_jobs.html", {
         "request": request, "user": user, "jobs": jobs, "printers": printers,
+        "submitted": request.query_params.get("submitted") == "1",
     })
 
 

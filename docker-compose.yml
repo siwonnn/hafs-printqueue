@@ -9,6 +9,7 @@ services:
       - ./data:/app/data
       - ./app:/app
       - /usr/share/fonts:/usr/share/fonts:ro
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     environment:
       - TZ=Asia/Seoul
       - PYTHONUNBUFFERED=1
@@ -18,6 +19,8 @@ services:
       - ALLOWED_EMAIL_DOMAIN=hafs.hs.kr
       - ADMIN_EMAILS=${ADMIN_EMAILS}
       - OAUTH_REDIRECT_URI=http://localhost:8000/auth/callback
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
     networks:
       - web
 
