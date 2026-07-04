@@ -12,6 +12,12 @@
     </div>
 </section>
 
+{% if submitted %}
+<div class="info-box" style="margin-bottom: 24px;">
+    <p style="margin: 0;">신청이 완료되었어요. 관리자 승인 후 순차적으로 출력이 진행됩니다.<br>신청 승인 및 거부 시 이메일로 알려드리니 메일함을 확인해 주세요.</p>
+</div>
+{% endif %}
+
 {% if not jobs %}
     <div class="empty-state">
         <p>아직 신청한 출력이 없습니다.</p>

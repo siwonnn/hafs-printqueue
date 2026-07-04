@@ -2,8 +2,9 @@
 import asyncio
 import logging
 from sqlalchemy import select, delete
-from models import Printer, FilamentSlot, PrinterStatus
+from models import Printer, FilamentSlot, PrinterStatus, Job, User
 from printer_client import PrinterClient
+from email_service import send_print_done_email
 
 logger = logging.getLogger("printer_sync")
 
@@ -28,9 +29,29 @@ async def sync_printer(db, printer):
         logger.warning("sync 실패 %s: %s", printer.name, e)
         return
 
-    # 프린터 상태
+    # 프린터 상태 갱신
     if status.online:
-        printer.status = _STATE_MAP.get(status.state, PrinterStatus.IDLE)
+        new_status = _STATE_MAP.get(status.state, PrinterStatus.IDLE)
+
+        # 프린트 작업 완료 시 user에게 이메일 발송
+        if printer.status == PrinterStatus.PRINTING and status.state == "FINISH":
+            if printer.current_job_id:
+                job_result = await db.execute(select(Job).where(Job.id == printer.current_job_id))
+                job = job_result.scalar_one_or_none()
+                if job:
+                    user_result = await db.execute(select(User).where(User.id == job.user_id))
+                    user = user_result.scalar_one_or_none()
+                    if user:
+                        try:
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(
+                                None, _send_done_notification,
+                                user.email, user.name, job.filename, printer,
+                            )
+                        except Exception as e:
+                            logger.warning("이메일 발송 실패 %s: %s", user.email, e)
+
+        printer.status = new_status
         printer.progress = status.percentage
         printer.nozzle_temp = status.nozzle_temp
         printer.bed_temp = status.bed_temp
@@ -57,15 +78,21 @@ async def sync_all(db):
         await sync_printer(db, printer)
 
 
-def _capture_snapshot(printer):
-    """프린터 카메라 한 프레임을 /app/static/cam{id}.jpg로 저장. 실패해도 조용히."""
+def _send_done_notification(user_email: str, user_name: str, job_filename: str, printer):
+    """카메라 프레임 획득 후 프린트 작업 완료 이메일 발송."""
+    image_bytes = _get_camera_frame_bytes(printer)
+    send_print_done_email(user_email, user_name, job_filename, image_bytes)
+
+
+def _get_camera_frame_bytes(printer) -> bytes | None:
+    """프린터 카메라 한 프레임을 bytes로 반환. 실패 시 None."""
     import base64, time as _t
     try:
         import bambulabs_api as _bl
     except ImportError:
-        return False
+        return None
     if not (printer.ip and printer.access_code and printer.serial):
-        return False
+        return None
     p = None
     try:
         p = _bl.Printer(printer.ip, printer.access_code, printer.serial)
@@ -73,30 +100,34 @@ def _capture_snapshot(printer):
         p.camera_start()
         _t.sleep(6)
         frame = p.get_camera_frame()
-        data = None
         if frame:
             if isinstance(frame, (bytes, bytearray)):
-                data = bytes(frame)
-            else:
-                try:
-                    data = base64.b64decode(frame)
-                except Exception:
-                    data = None
-        if data:
-            with open(f"/app/static/cam{printer.id}.jpg", "wb") as fh:
-                fh.write(data)
-            logger.info("snapshot 저장: cam%s.jpg (%d bytes)", printer.id, len(data))
-            return True
-        return False
+                return bytes(frame)
+            try:
+                return base64.b64decode(frame)
+            except Exception:
+                return None
+        return None
     except Exception as e:
-        logger.warning("snapshot 실패 %s: %s", printer.name, e)
-        return False
+        logger.warning("카메라 프레임 획득 실패 %s: %s", printer.name, e)
+        return None
     finally:
         if p is not None:
             try: p.camera_stop()
             except Exception: pass
             try: p.mqtt_stop()
             except Exception: pass
+
+
+def _capture_snapshot(printer):
+    """프린터 카메라 한 프레임을 /app/static/cam{id}.jpg로 저장. 실패해도 조용히."""
+    data = _get_camera_frame_bytes(printer)
+    if data:
+        with open(f"/app/static/cam{printer.id}.jpg", "wb") as fh:
+            fh.write(data)
+        logger.info("snapshot 저장: cam%s.jpg (%d bytes)", printer.id, len(data))
+        return True
+    return False
 
 
 async def capture_all_snapshots(db):
