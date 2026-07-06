@@ -77,7 +77,8 @@ Bambu Lab A1 + AMS Lite 프린터의 출력 신청, 큐 관리, 상태 모니터
 │   ├── db.sqlite            # SQLite 데이터베이스
 │   └── uploads/             # 업로드된 파일 저장
 ├── .env                     # 환경변수 (비공개)
-└── docker-compose.yml
+├── docker-compose.yml          # 프로덕션 설정 (서버 배포용)
+└── docker-compose.override.yml # 로컬 개발용 오버라이드
 ```
 
 ---
@@ -116,10 +117,17 @@ OAUTH_REDIRECT_URI=https://your-domain/auth/callback
 - Google Cloud Console에서 OAuth 2.0 클라이언트 ID 생성
 - 승인된 리디렉션 URI: `https://<도메인>/auth/callback`
 
-### 4. 실행
+### 4. 실행 (프로덕션)
+`docker-compose.yml`은 서버 배포용 설정입니다. Caddy 등 리버스 프록시와 공유하는 외부 네트워크(`web`)가 필요하며, 컨테이너 포트를 호스트에 직접 노출하지 않습니다.
+
 ```bash
-docker compose up -d
+# 외부 네트워크가 없다면 먼저 생성 (Caddy 스택에서 이미 만들었다면 생략)
+docker network create web
+
+docker compose up -d --build
 ```
+
+로컬에 `docker-compose.override.yml`이 있으면 `docker compose` 명령이 자동으로 병합하므로, 서버에는 이 파일을 배포하지 않아야 합니다.
 
 ### 5. 프린터 등록
 - 관리자 로그인 후 `/admin` 에서 프린터 추가
@@ -130,15 +138,21 @@ docker compose up -d
 
 ## 개발 환경 (로컬)
 
+`docker-compose.override.yml`이 `docker-compose.yml`과 같은 디렉토리에 있으면 `docker compose` 실행 시 자동으로 병합되어 로컬 개발용 설정이 적용됩니다.
+
+- `8000:8000` 포트를 호스트에 노출
+- `uvicorn --reload`로 코드 변경 시 자동 재시작
+- `web` 네트워크를 로컬 브리지 네트워크로 생성 (외부 네트워크 불필요)
+
 ```bash
 # .env에서 로컬 설정
 OAUTH_REDIRECT_URI=http://localhost:8000/auth/callback
 
-# 실행
+# 실행 (docker-compose.yml + docker-compose.override.yml 자동 병합)
 docker compose up
 ```
 
-로컬에서는 프린터 연결 없이도 Mock 모드로 UI 개발 가능.
+`http://localhost:8000` 에서 접속하며, 프린터 연결 없이도 Mock 모드로 UI 개발 가능.
 
 ---
 
