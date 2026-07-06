@@ -38,9 +38,10 @@ oauth.register(
 # ============================================================
 
 async def login(request: Request):
-    """Google 로그인 페이지로 리다이렉트."""
     redirect_uri = settings.OAUTH_REDIRECT_URI
-    return await oauth.google.authorize_redirect(request, redirect_uri)
+    return await oauth.google.authorize_redirect(
+        request, redirect_uri, hd=settings.ALLOWED_EMAIL_DOMAIN
+    )
 
 
 async def callback(request: Request, db: AsyncSession = Depends(get_db)):

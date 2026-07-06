@@ -19,3 +19,5 @@ Thumbs.db
 
 # 카메라 스냅샷 (런타임 생성)
 app/static/cam*.jpg
+
+.venv
