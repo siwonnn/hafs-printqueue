@@ -21,7 +21,7 @@ from auth import require_admin
 from db import get_db
 from printer_client import PrinterClient
 from models import Job, JobStatus, Printer, User, PrinterStatus
-from email_service import send_approved_email, send_rejected_email
+from email_service import send_approved_email, send_rejected_email, send_print_done_email
 
 
 def _utcnow():
@@ -209,6 +209,7 @@ async def approve_job(
 @router.post("/jobs/{job_id}/reject")
 async def reject_job(
     job_id: int,
+    reason: str = Form(""),
     user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -219,13 +220,18 @@ async def reject_job(
     job_user_result = await db.execute(select(User).where(User.id == job.user_id))
     job_user = job_user_result.scalar_one_or_none()
 
+    reason = reason.strip()
     job.status = JobStatus.REJECTED
+    job.admin_notes = reason or None
     await db.commit()
 
     if job_user:
         try:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, send_rejected_email, job_user.email, job_user.name, job.filename)
+            await loop.run_in_executor(
+                None, send_rejected_email,
+                job_user.email, job_user.name, job.filename, reason,
+            )
         except Exception as e:
             logger.warning("거부 이메일 발송 실패 %s: %s", job_user.email, e)
 
@@ -376,6 +382,19 @@ async def complete_job(
     for i, j in enumerate(remaining, start=1):
         j.queue_position = i
     await db.commit()
+
+    # 완료 이메일 발송
+    job_user_result = await db.execute(select(User).where(User.id == job.user_id))
+    job_user = job_user_result.scalar_one_or_none()
+    if job_user is not None:
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None, send_print_done_email,
+                job_user.email, job_user.name, job.filename,
+            )
+        except Exception as e:
+            logger.warning("완료 이메일 발송 실패 %s: %s", job_user.email, e)
 
     return RedirectResponse(url="/admin", status_code=303)
 

@@ -42,6 +42,9 @@
                         {% if job.user_notes %}
                             <div class="job-notes">메모: {{ job.user_notes }}</div>
                         {% endif %}
+                        {% if job.status.value == "rejected" and job.admin_notes %}
+                            <div class="job-notes">거부 사유: {{ job.admin_notes }}</div>
+                        {% endif %}
                     </td>
                     <td>{{ printers[job.printer_id].name if job.printer_id in printers else "—" }}</td>
                     <td>

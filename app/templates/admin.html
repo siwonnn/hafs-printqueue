@@ -83,7 +83,9 @@
                                 <form method="post" action="/admin/jobs/{{ job.id }}/approve" style="display: inline;">
                                     <button type="submit" class="btn btn-primary btn-sm">승인</button>
                                 </form>
-                                <form method="post" action="/admin/jobs/{{ job.id }}/reject" style="display: inline;">
+                                <form method="post" action="/admin/jobs/{{ job.id }}/reject" style="display: inline;"
+                                      onsubmit="var r=prompt('거부 사유를 입력하세요 (선택)', ''); if(r===null) return false; this.reason.value=r; return true;">
+                                    <input type="hidden" name="reason">
                                     <button type="submit" class="btn btn-ghost btn-sm">거부</button>
                                 </form>
                             </td>

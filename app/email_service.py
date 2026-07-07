@@ -1,6 +1,7 @@
 import smtplib
 import ssl
 from email.message import EmailMessage
+from html import escape
 from dotenv import load_dotenv
 import os
 
@@ -12,15 +13,13 @@ SMTP_USER = os.getenv("SMTP_USER")
 SMTP_PASS = os.getenv("SMTP_PASS")
 
 
-def send_email(to: str, subject: str, html: str, image_bytes: bytes = None):
+def send_email(to: str, subject: str, html: str):
     context = ssl.create_default_context()
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = SMTP_USER
     msg["To"] = to
     msg.set_content(html, subtype="html")
-    if image_bytes:
-        msg.add_related(image_bytes, "image", "jpeg", cid="<printcam>")
 
     with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as smtp:
         smtp.starttls(context=context)
@@ -28,9 +27,8 @@ def send_email(to: str, subject: str, html: str, image_bytes: bytes = None):
         smtp.send_message(msg)
 
 
-def send_print_done_email(to: str, user_name: str, job_filename: str, image_bytes: bytes = None):
+def send_print_done_email(to: str, user_name: str, job_filename: str):
     subject = f"[HAFS PrintQueue] 출력 완료 - {job_filename}"
-    camera_img = '<img src="cid:printcam" style="max-width:100%;border-radius:8px;margin:0 0 24px;display:block;" alt="프린터 카메라">' if image_bytes else ""
     html = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -54,9 +52,7 @@ def send_print_done_email(to: str, user_name: str, job_filename: str, image_byte
         </p>
 
         <p style="margin:0 0 6px;"><strong>파일명</strong></p>
-        <p style="margin:0 0 16px;color:#6b7280;word-break:break-all;">{job_filename}</p>
-
-        {camera_img}
+        <p style="margin:0 0 24px;color:#6b7280;word-break:break-all;">{job_filename}</p>
 
         <!-- Separator -->
         <hr style="border:none;border-top:1px solid #e5e7eb;margin:0 0 24px;">
@@ -69,7 +65,7 @@ def send_print_done_email(to: str, user_name: str, job_filename: str, image_byte
   </table>
 </body>
 </html>"""
-    send_email(to, subject, html, image_bytes)
+    send_email(to, subject, html)
 
 
 def send_approved_email(to: str, user_name: str, job_filename: str):
@@ -108,8 +104,12 @@ def send_approved_email(to: str, user_name: str, job_filename: str):
     send_email(to, subject, html)
 
 
-def send_rejected_email(to: str, user_name: str, job_filename: str):
+def send_rejected_email(to: str, user_name: str, job_filename: str, reason: str = ""):
     subject = f"[HAFS PrintQueue] 출력 신청 거부 - {job_filename}"
+    reason_block = f"""
+        <p style="margin:0 0 6px;"><strong>사유</strong></p>
+        <p style="margin:0 0 24px;color:#6b7280;white-space:pre-wrap;">{escape(reason)}</p>
+""" if reason else ""
     html = f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -131,7 +131,7 @@ def send_rejected_email(to: str, user_name: str, job_filename: str):
 
         <p style="margin:0 0 6px;"><strong>파일명</strong></p>
         <p style="margin:0 0 24px;color:#6b7280;word-break:break-all;">{job_filename}</p>
-
+        {reason_block}
         <hr style="border:none;border-top:1px solid #e5e7eb;margin:0 0 24px;">
         <p style="margin:0;font-size:13px;color:#6b7280;">HAFS PrintQueue · 용인한국외국어대학교부설고등학교 메이커 시스템</p>
 

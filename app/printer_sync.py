@@ -2,9 +2,8 @@
 import asyncio
 import logging
 from sqlalchemy import select, delete
-from models import Printer, FilamentSlot, PrinterStatus, Job, User
+from models import Printer, FilamentSlot, PrinterStatus
 from printer_client import PrinterClient
-from email_service import send_print_done_email
 
 logger = logging.getLogger("printer_sync")
 
@@ -31,27 +30,7 @@ async def sync_printer(db, printer):
 
     # 프린터 상태 갱신
     if status.online:
-        new_status = _STATE_MAP.get(status.state, PrinterStatus.IDLE)
-
-        # 프린트 작업 완료 시 user에게 이메일 발송
-        if printer.status == PrinterStatus.PRINTING and status.state == "FINISH":
-            if printer.current_job_id:
-                job_result = await db.execute(select(Job).where(Job.id == printer.current_job_id))
-                job = job_result.scalar_one_or_none()
-                if job:
-                    user_result = await db.execute(select(User).where(User.id == job.user_id))
-                    user = user_result.scalar_one_or_none()
-                    if user:
-                        try:
-                            loop = asyncio.get_running_loop()
-                            await loop.run_in_executor(
-                                None, _send_done_notification,
-                                user.email, user.name, job.filename, printer,
-                            )
-                        except Exception as e:
-                            logger.warning("이메일 발송 실패 %s: %s", user.email, e)
-
-        printer.status = new_status
+        printer.status = _STATE_MAP.get(status.state, PrinterStatus.IDLE)
         printer.progress = status.percentage
         printer.nozzle_temp = status.nozzle_temp
         printer.bed_temp = status.bed_temp
@@ -76,12 +55,6 @@ async def sync_all(db):
     result = await db.execute(select(Printer).order_by(Printer.id))
     for printer in result.scalars().all():
         await sync_printer(db, printer)
-
-
-def _send_done_notification(user_email: str, user_name: str, job_filename: str, printer):
-    """카메라 프레임 획득 후 프린트 작업 완료 이메일 발송."""
-    image_bytes = _get_camera_frame_bytes(printer)
-    send_print_done_email(user_email, user_name, job_filename, image_bytes)
 
 
 def _get_camera_frame_bytes(printer) -> bytes | None:
